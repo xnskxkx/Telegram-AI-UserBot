@@ -4,9 +4,8 @@ from datetime import datetime
 from typing import List
 from sqlalchemy import select, and_
 from database.session import AsyncSessionLocal
-from database.models import User, Dialog
+from database.models import User
 from app.openrouter import generate_reply
-import json
 
 # Настройки
 PROACTIVE_INTERVAL = 1800  # 30 * 60  # 30 минут между проверками
@@ -39,11 +38,15 @@ class ProactiveMessaging:
             self.task = asyncio.create_task(self._main_loop())
             print("[PROACTIVE] Система проактивных сообщений запущена")
 
-    def stop(self):
+    async def stop(self):
         """Остановить фоновую задачу"""
         self.running = False
         if self.task:
             self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
             print("[PROACTIVE] Система проактивных сообщений остановлена")
 
     def _reset_daily_counters_if_needed(self):
@@ -75,28 +78,14 @@ class ProactiveMessaging:
         """Получить время последнего сообщения пользователя"""
         async with AsyncSessionLocal() as session:
             res = await session.execute(
-                select(Dialog).where(Dialog.user_id == user.id)
+                select(User).where(User.id == user.id)
             )
-            dialog = res.scalar_one_or_none() # Это что?
+            refreshed_user = res.scalar_one_or_none()
 
-            if not dialog:
+            if not refreshed_user or not refreshed_user.last_activity:
                 return 0
 
-            try:
-                history = json.loads(dialog.history_json)
-                if not history:
-                    return 0
-
-                # Ищем последнее сообщение пользователя
-                for msg in reversed(history):
-                    if msg.get("role") == "user":
-                        # У нас нет timestamp в истории, используем время обновления записи
-                        # Это приближение - в реальности нужно добавить timestamp в историю
-                        return time.time() - SILENCE_THRESHOLD - 1  # заглушка
-
-                return 0
-            except json.JSONDecodeError:
-                return 0
+            return refreshed_user.last_activity.timestamp()
 
     async def _get_users_for_proactive(self) -> List[User]:
         """Получить пользователей для проактивных сообщений"""
@@ -179,6 +168,8 @@ class ProactiveMessaging:
                         # Небольшая задержка между отправками
                         await asyncio.sleep(5)
 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
                 print(f"[PROACTIVE ERROR] Ошибка в основном цикле: {e}")
 
@@ -193,8 +184,8 @@ def start_proactive_messaging(client):
     proactive_messaging = ProactiveMessaging(client)
     proactive_messaging.start()
 
-def stop_proactive_messaging():
+async def stop_proactive_messaging():
     """Остановить систему проактивных сообщений"""
     global proactive_messaging
     if proactive_messaging:
-        proactive_messaging.stop()
+        await proactive_messaging.stop()

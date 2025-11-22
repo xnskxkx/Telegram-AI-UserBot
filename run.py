@@ -5,7 +5,8 @@ from pyrogram import idle
 
 from app.client import client
 import app.handlers  # регистрирует хендлеры
-from app.proactive_messages import start_proactive_messaging
+from app.message_buffer import cancel_all_user_tasks
+from app.proactive_messages import start_proactive_messaging, stop_proactive_messaging
 from database.session import engine
 from database.models import Base
 
@@ -25,15 +26,19 @@ async def init_database():
     print("✅ Database tables created")
 
 async def main():
+    proactive_started = False
+    client_started = False
     try:
         # Инициализируем БД
         await init_database()
 
         # Запускаем клиент
         await client.start()
+        client_started = True
 
         # Запускаем проактивные сообщения
         start_proactive_messaging(client)
+        proactive_started = True
 
         # Получаем информацию о текущем аккаунте и выводим
         me = await client.get_me()
@@ -47,6 +52,14 @@ async def main():
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         logging.exception("Main loop error")
+    finally:
+        if proactive_started:
+            await stop_proactive_messaging()
+
+        await cancel_all_user_tasks()
+
+        if client_started:
+            await client.stop()
 
 if __name__ == "__main__":
     # Используем client.run() для Pyrogram вместо asyncio.run(main())

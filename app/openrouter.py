@@ -3,6 +3,9 @@ from openai import AsyncOpenAI
 from config import OPENROUTER_API_KEY
 from app.prompts import system_prompt_for
 
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("OPENROUTER_API_KEY is not set. Provide a valid key before starting the bot.")
+
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=OPENROUTER_API_KEY,
