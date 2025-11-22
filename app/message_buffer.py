@@ -170,8 +170,8 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
         history = await get_history(session, user)
         print(f"[INCOMING] История: {len(history)} сообщений")
 
-        # Добавляем ОБЪЕДИНЕННОЕ сообщение
-        await append_history(session, user, "user", text)
+        # Формируем историю для LLM, включая новое сообщение пользователя
+        conversation_history = history + [{"role": "user", "content": text}]
 
         try:
             await client_instance.send_chat_action(tg_id, enums.ChatAction.TYPING)
@@ -180,7 +180,7 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
                 text=text,
                 username=user.username or str(user.tg_id),
                 mode=user.mode,
-                history=history
+                history=conversation_history
             )
             print(f"[SMART] Ответ от LLM: '{reply}'")
 
@@ -197,7 +197,6 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
             if text_response:
                 await client_instance.send_message(tg_id, text_response)
                 print(f"[SMART] Отправлен текст для {tg_id}: '{text_response}'")
-                await append_history(session, user, "assistant", text_response)
             else:
                 print(f"[SMART] Текст ответа пустой, пропускаем отправку")
 
@@ -210,6 +209,12 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
                     print(f"[SMART] Ошибка отправки стикера {sticker_number} для {tg_id}: {e}")
             else:
                 print(f"[SMART] Стикер не указан в ответе для {tg_id}")
+
+            # Обновляем историю только после успешной отправки
+            await append_history(session, user, "user", text)
+
+            if text_response:
+                await append_history(session, user, "assistant", text_response)
 
         except Exception as e:
             print(f"[ERROR] Generate reply: {e}")
@@ -234,6 +239,10 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
     # Отменяем предыдущую задачу
     if state.processing_task and not state.processing_task.done():
         state.processing_task.cancel()
+        try:
+            await state.processing_task
+        except asyncio.CancelledError:
+            pass
 
     # Добавляем сообщение
     state.messages.append(message_text)
@@ -281,6 +290,10 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
     # Отменяем предыдущую задачу обработки
     if state.processing_task and not state.processing_task.done():
         state.processing_task.cancel()
+        try:
+            await state.processing_task
+        except asyncio.CancelledError:
+            pass
 
     # Добавляем placeholder сразу
     placeholder = f"[Обрабатывается {media_type}...]"
@@ -336,3 +349,21 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
         await process_user_messages(client_instance, tg_id, username)
     except asyncio.CancelledError:
         pass
+
+
+async def cancel_all_user_tasks():
+    """Отменяет все активные задачи обработки сообщений и транскрипций"""
+    cancellation_targets = []
+
+    for state in user_states.values():
+        if state.processing_task and not state.processing_task.done():
+            state.processing_task.cancel()
+            cancellation_targets.append(state.processing_task)
+
+        for pending in state.pending_media:
+            if pending.transcription_task and not pending.transcription_task.done():
+                pending.transcription_task.cancel()
+                cancellation_targets.append(pending.transcription_task)
+
+    if cancellation_targets:
+        await asyncio.gather(*cancellation_targets, return_exceptions=True)

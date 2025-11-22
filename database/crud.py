@@ -7,6 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .models import User, Dialog
 from config import CONTEXT_MAX_TURNS
+from datetime import datetime
 
 async def upsert_user(session: AsyncSession, tg_id: int, username: Optional[str]) -> User:
     """Создать или обновить пользователя"""
@@ -98,6 +99,9 @@ async def append_history(session: AsyncSession, user: User, role: str, content: 
 
         # Добавляем новое сообщение
         hist.append({"role": role, "content": content})
+
+        if role == "user":
+            user.last_activity = datetime.utcnow()
 
         # Обрезаем до последних CONTEXT_MAX_TURNS*2 сообщений
         if len(hist) > CONTEXT_MAX_TURNS * 2:
