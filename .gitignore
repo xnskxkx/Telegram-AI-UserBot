@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+*.pyd
+*.pyo
+*.pyd
+*.so
+*.dylib
+
+# Virtual environments
+venv/
+.env/
+.env.*
+*.env
+*.env.bak
+
+# Pyrogram session files
+*.session
+*.session-journal
+*.session-shm
+*.session-wal
+
+# SQLite DB
+*.db
+*.sqlite
+*.sqlite3
+
+# VSCode / JetBrains
+.vscode/
+.idea/
+
+# Build / Dist
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+log/
+
+# OS system files
+.DS_Store
+Thumbs.db
+
+# Cache
+.cache/
+.mypy_cache/
+__pypackages__/
