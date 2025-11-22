@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import time
 import os
 import tempfile
@@ -12,6 +13,8 @@ from database.session import AsyncSessionLocal
 from database.crud import get_user, upsert_user, get_history, append_history
 from app.openrouter import generate_reply
 from config import REPLY_ON_UNKNOWN, STICKERS
+
+logger = logging.getLogger(__name__)
 
 # Загружаем модель Whisper один раз при старте
 # Варианты: tiny, base, small, medium, large
@@ -60,7 +63,7 @@ def is_likely_continuation(text: str, time_since_last: float) -> bool:
 async def transcribe_audio(file_path: str) -> str:
     """Транскрибирует аудио через локальный Whisper"""
     try:
-        print(f"[WHISPER] Начинаем транскрипцию файла: {file_path}")
+        logger.info("[WHISPER] Начинаем транскрипцию файла: %s", file_path)
 
         # Whisper синхронный, запускаем в отдельном потоке
         loop = asyncio.get_event_loop()
@@ -70,10 +73,10 @@ async def transcribe_audio(file_path: str) -> str:
         )
 
         text = result["text"].strip()
-        print(f"[WHISPER] Транскрипция завершена: '{text[:100]}...'")
+        logger.info("[WHISPER] Транскрипция завершена: '%s...'", text[:100])
         return text
     except Exception as e:
-        print(f"[WHISPER] Ошибка транскрипции: {e}")
+        logger.exception("[WHISPER] Ошибка транскрипции: %s", e)
         return "[Не удалось распознать аудио]"
     finally:
         # Удаляем временный файл
@@ -89,7 +92,7 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
     if not state.pending_media:
         return
 
-    print(f"[SMART] Ожидаем {len(state.pending_media)} транскрипций...")
+    logger.info("[SMART] Ожидаем %d транскрипций...", len(state.pending_media))
 
     # Ждём все задачи с таймаутом
     tasks = [pm.transcription_task for pm in state.pending_media]
@@ -98,9 +101,9 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
             asyncio.gather(*tasks, return_exceptions=True),
             timeout=timeout
         )
-        print(f"[SMART] Все транскрипции завершены")
+        logger.info("[SMART] Все транскрипции завершены")
     except asyncio.TimeoutError:
-        print(f"[SMART] Таймаут ожидания транскрипций ({timeout}с)")
+        logger.warning("[SMART] Таймаут ожидания транскрипций (%sс)", timeout)
 
     # Заменяем placeholders на результаты
     for pm in state.pending_media:
@@ -110,9 +113,12 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
                 if pm.placeholder_index < len(state.messages):
                     old_placeholder = state.messages[pm.placeholder_index]
                     state.messages[pm.placeholder_index] = transcription
-                    print(f"[SMART] Заменили placeholder '{old_placeholder}' на транскрипцию")
+                    logger.info(
+                        "[SMART] Заменили placeholder '%s' на транскрипцию",
+                        old_placeholder,
+                    )
             except Exception as e:
-                print(f"[SMART] Ошибка получения транскрипции: {e}")
+                logger.exception("[SMART] Ошибка получения транскрипции: %s", e)
 
     state.pending_media.clear()
 
@@ -135,7 +141,7 @@ async def process_user_messages(client_instance, tg_id: int, username: str = Non
         messages = state.messages.copy()
         state.messages.clear()
 
-        print(f"[SMART] Обрабатываем {len(messages)} сообщений от {tg_id}")
+        logger.info("[SMART] Обрабатываем %d сообщений от %s", len(messages), tg_id)
 
         # Объединяем сообщения
         combined = "\n".join(messages)
@@ -148,30 +154,30 @@ async def process_user_messages(client_instance, tg_id: int, username: str = Non
 
 async def generate_and_send_reply(client_instance, tg_id: int, text: str, username: str = None):
     """Генерировать и отправить ответ"""
-    print(f"[SMART] Генерируем ответ для {tg_id} на текст: '{text[:50]}...'")
+    logger.info("[SMART] Генерируем ответ для %s на текст: '%s...'", tg_id, text[:50])
 
     async with AsyncSessionLocal() as session:
         user = await get_user(session, tg_id)
         if not user:
-            print(f"[INCOMING] Пользователь {tg_id} не найден в БД")
+            logger.info("[INCOMING] Пользователь %s не найден в БД", tg_id)
             if not REPLY_ON_UNKNOWN:
-                print(f"[INCOMING] REPLY_ON_UNKNOWN=False, пропускаем")
+                logger.info("[INCOMING] REPLY_ON_UNKNOWN=False, пропускаем")
                 return
             user = await upsert_user(session, tg_id, username)
-            print(f"[INCOMING] Создан новый пользователь: {user.tg_id}")
+            logger.info("[INCOMING] Создан новый пользователь: %s", user.tg_id)
 
         if not user.active:
-            print(f"[INCOMING] Пользователь {tg_id} неактивен, пропускаем")
+            logger.info("[INCOMING] Пользователь %s неактивен, пропускаем", tg_id)
             return
 
-        print(f"[INCOMING] Пользователь активен, mode={user.mode}")
+        logger.info("[INCOMING] Пользователь активен, mode=%s", user.mode)
 
         # История диалога
         history = await get_history(session, user)
-        print(f"[INCOMING] История: {len(history)} сообщений")
+        logger.info("[INCOMING] История: %d сообщений", len(history))
 
-        # Добавляем ОБЪЕДИНЕННОЕ сообщение
-        await append_history(session, user, "user", text)
+        # Формируем историю для LLM, включая новое сообщение пользователя
+        conversation_history = history + [{"role": "user", "content": text}]
 
         try:
             await client_instance.send_chat_action(tg_id, enums.ChatAction.TYPING)
@@ -180,9 +186,9 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
                 text=text,
                 username=user.username or str(user.tg_id),
                 mode=user.mode,
-                history=history
+                history=conversation_history
             )
-            print(f"[SMART] Ответ от LLM: '{reply}'")
+            logger.info("[SMART] Ответ от LLM: '%s'", reply)
 
             # Парсинг ответа
             parts = reply.split()
@@ -196,23 +202,33 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
             # Отправка текста
             if text_response:
                 await client_instance.send_message(tg_id, text_response)
-                print(f"[SMART] Отправлен текст для {tg_id}: '{text_response}'")
-                await append_history(session, user, "assistant", text_response)
+                logger.info("[SMART] Отправлен текст для %s: '%s'", tg_id, text_response)
             else:
-                print(f"[SMART] Текст ответа пустой, пропускаем отправку")
+                logger.info("[SMART] Текст ответа пустой, пропускаем отправку")
 
             # Отправка стикера
             if sticker_number:
                 try:
                     await client_instance.send_sticker(tg_id, STICKERS[sticker_number])
-                    print(f"[SMART] Отправлен стикер {sticker_number} для {tg_id}")
+                    logger.info("[SMART] Отправлен стикер %s для %s", sticker_number, tg_id)
                 except Exception as e:
-                    print(f"[SMART] Ошибка отправки стикера {sticker_number} для {tg_id}: {e}")
+                    logger.exception(
+                        "[SMART] Ошибка отправки стикера %s для %s: %s",
+                        sticker_number,
+                        tg_id,
+                        e,
+                    )
             else:
-                print(f"[SMART] Стикер не указан в ответе для {tg_id}")
+                logger.info("[SMART] Стикер не указан в ответе для %s", tg_id)
+
+            # Обновляем историю только после успешной отправки
+            await append_history(session, user, "user", text)
+
+            if text_response:
+                await append_history(session, user, "assistant", text_response)
 
         except Exception as e:
-            print(f"[ERROR] Generate reply: {e}")
+            logger.exception("[ERROR] Generate reply: %s", e)
             await client_instance.send_message(tg_id, "Позже")
 
 
@@ -234,6 +250,10 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
     # Отменяем предыдущую задачу
     if state.processing_task and not state.processing_task.done():
         state.processing_task.cancel()
+        try:
+            await state.processing_task
+        except asyncio.CancelledError:
+            pass
 
     # Добавляем сообщение
     state.messages.append(message_text)
@@ -246,10 +266,10 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
     # Определяем стратегию
     if is_likely_continuation(message_text, time_since_last):
         timeout = BUFFER_TIMEOUT
-        print(f"[SMART] Похоже на продолжение, ждем {timeout}с")
+        logger.info("[SMART] Похоже на продолжение, ждем %sс", timeout)
     else:
         timeout = 9
-        print(f"[SMART] Законченное сообщение, ждем {timeout}с")
+        logger.info("[SMART] Законченное сообщение, ждем %sс", timeout)
 
     # Создаем задачу с таймаутом
     state.processing_task = asyncio.create_task(
@@ -281,6 +301,10 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
     # Отменяем предыдущую задачу обработки
     if state.processing_task and not state.processing_task.done():
         state.processing_task.cancel()
+        try:
+            await state.processing_task
+        except asyncio.CancelledError:
+            pass
 
     # Добавляем placeholder сразу
     placeholder = f"[Обрабатывается {media_type}...]"
@@ -288,7 +312,7 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
     state.messages.append(placeholder)
     state.last_message_time = current_time
 
-    print(f"[MEDIA] Добавлен placeholder на позицию {placeholder_index}")
+    logger.info("[MEDIA] Добавлен placeholder на позицию %s", placeholder_index)
 
     # Запускаем транскрипцию асинхронно
     async def download_and_transcribe():
@@ -297,16 +321,16 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
                 tmp_path = tmp_file.name
 
-            print(f"[MEDIA] Скачиваем {media_type} в {tmp_path}")
+            logger.info("[MEDIA] Скачиваем %s в %s", media_type, tmp_path)
             await message.download(file_name=tmp_path)
 
             # Транскрибируем
             transcription = await transcribe_audio(tmp_path)
-            print(f"[MEDIA] Получена транскрипция: '{transcription[:100]}...'")
+            logger.info("[MEDIA] Получена транскрипция: '%s...'", transcription[:100])
 
             return transcription
         except Exception as e:
-            print(f"[MEDIA] Ошибка обработки {media_type}: {e}")
+            logger.exception("[MEDIA] Ошибка обработки %s: %s", media_type, e)
             return f"[Ошибка обработки {media_type}]"
 
     # Создаём задачу транскрипции
@@ -324,7 +348,7 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
 
     # Увеличиваем таймаут, т.к. есть pending медиа
     timeout = max(15, BUFFER_TIMEOUT)  # минимум 15 секунд для медиа
-    print(f"[MEDIA] Ждём {timeout}с перед обработкой (есть pending медиа)")
+    logger.info("[MEDIA] Ждём %sс перед обработкой (есть pending медиа)", timeout)
 
     # Создаем задачу с таймаутом
     state.processing_task = asyncio.create_task(
@@ -336,3 +360,21 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
         await process_user_messages(client_instance, tg_id, username)
     except asyncio.CancelledError:
         pass
+
+
+async def cancel_all_user_tasks():
+    """Отменяет все активные задачи обработки сообщений и транскрипций"""
+    cancellation_targets = []
+
+    for state in user_states.values():
+        if state.processing_task and not state.processing_task.done():
+            state.processing_task.cancel()
+            cancellation_targets.append(state.processing_task)
+
+        for pending in state.pending_media:
+            if pending.transcription_task and not pending.transcription_task.done():
+                pending.transcription_task.cancel()
+                cancellation_targets.append(pending.transcription_task)
+
+    if cancellation_targets:
+        await asyncio.gather(*cancellation_targets, return_exceptions=True)

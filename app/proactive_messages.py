@@ -1,18 +1,20 @@
 import asyncio
+import logging
 import time
 from datetime import datetime
 from typing import List
 from sqlalchemy import select, and_
 from database.session import AsyncSessionLocal
-from database.models import User, Dialog
+from database.models import User
 from app.openrouter import generate_reply
-import json
 
 # Настройки
 PROACTIVE_INTERVAL = 1800  # 30 * 60  # 30 минут между проверками
 SILENCE_THRESHOLD = 14400 # 4 * 60 * 60  # 4 часа молчания = отправляем ледокол
 MAX_PROACTIVE_PER_DAY = 2  # максимум 2 проактивных сообщения в день на пользователя
 WORKING_HOURS = (9, 22)  # отправляем только с 9 до 22
+
+logger = logging.getLogger(__name__)
 
 # Шаблоны ледоколов
 ICEBREAKERS = [
@@ -37,14 +39,18 @@ class ProactiveMessaging:
         if not self.running:
             self.running = True
             self.task = asyncio.create_task(self._main_loop())
-            print("[PROACTIVE] Система проактивных сообщений запущена")
+            logger.info("[PROACTIVE] Система проактивных сообщений запущена")
 
-    def stop(self):
+    async def stop(self):
         """Остановить фоновую задачу"""
         self.running = False
         if self.task:
             self.task.cancel()
-            print("[PROACTIVE] Система проактивных сообщений остановлена")
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            logger.info("[PROACTIVE] Система проактивных сообщений остановлена")
 
     def _reset_daily_counters_if_needed(self):
         """Сбросить счетчики если наступил новый день"""
@@ -52,7 +58,7 @@ class ProactiveMessaging:
         if current_day != self.last_reset_day:
             self.daily_counters.clear()
             self.last_reset_day = current_day
-            print("[PROACTIVE] Счетчики сброшены для нового дня")
+            logger.info("[PROACTIVE] Счетчики сброшены для нового дня")
 
     def _is_working_hours(self) -> bool:
         """Проверить рабочее время"""
@@ -75,28 +81,14 @@ class ProactiveMessaging:
         """Получить время последнего сообщения пользователя"""
         async with AsyncSessionLocal() as session:
             res = await session.execute(
-                select(Dialog).where(Dialog.user_id == user.id)
+                select(User).where(User.id == user.id)
             )
-            dialog = res.scalar_one_or_none() # Это что?
+            refreshed_user = res.scalar_one_or_none()
 
-            if not dialog:
+            if not refreshed_user or not refreshed_user.last_activity:
                 return 0
 
-            try:
-                history = json.loads(dialog.history_json)
-                if not history:
-                    return 0
-
-                # Ищем последнее сообщение пользователя
-                for msg in reversed(history):
-                    if msg.get("role") == "user":
-                        # У нас нет timestamp в истории, используем время обновления записи
-                        # Это приближение - в реальности нужно добавить timestamp в историю
-                        return time.time() - SILENCE_THRESHOLD - 1  # заглушка
-
-                return 0
-            except json.JSONDecodeError:
-                return 0
+            return refreshed_user.last_activity.timestamp()
 
     async def _get_users_for_proactive(self) -> List[User]:
         """Получить пользователей для проактивных сообщений"""
@@ -146,10 +138,14 @@ class ProactiveMessaging:
                 await append_history(session, user, "assistant", icebreaker)
 
             self._increment_daily_counter(user.tg_id)
-            print(f"[PROACTIVE] Отправлен ледокол пользователю {user.tg_id}: '{icebreaker[:50]}...'")
+            logger.info(
+                "[PROACTIVE] Отправлен ледокол пользователю %s: '%s...'",
+                user.tg_id,
+                icebreaker[:50],
+            )
 
         except Exception as e:
-            print(f"[PROACTIVE ERROR] Ошибка отправки пользователю {user.tg_id}: {e}")
+            logger.exception("[PROACTIVE ERROR] Ошибка отправки пользователю %s: %s", user.tg_id, e)
 
     async def _main_loop(self):
         """Основной цикл проверки"""
@@ -158,12 +154,12 @@ class ProactiveMessaging:
                 self._reset_daily_counters_if_needed()
 
                 if not self._is_working_hours():
-                    print("[PROACTIVE] Нерабочее время, пропускаем проверку")
+                    logger.info("[PROACTIVE] Нерабочее время, пропускаем проверку")
                     await asyncio.sleep(PROACTIVE_INTERVAL)
                     continue
 
                 users = await self._get_users_for_proactive()
-                print(f"[PROACTIVE] Проверяем {len(users)} пользователей")
+                logger.info("[PROACTIVE] Проверяем %d пользователей", len(users))
 
                 for user in users:
                     if not self._can_send_proactive(user.tg_id):
@@ -173,14 +169,20 @@ class ProactiveMessaging:
                     time_since_last = time.time() - last_msg_time
 
                     if time_since_last >= SILENCE_THRESHOLD:
-                        print(f"[PROACTIVE] Пользователь {user.tg_id} молчит {time_since_last / 3600:.1f}ч")
+                        logger.info(
+                            "[PROACTIVE] Пользователь %s молчит %.1fч",
+                            user.tg_id,
+                            time_since_last / 3600,
+                        )
                         await self._send_proactive_message(user)
 
                         # Небольшая задержка между отправками
                         await asyncio.sleep(5)
 
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                print(f"[PROACTIVE ERROR] Ошибка в основном цикле: {e}")
+                logger.exception("[PROACTIVE ERROR] Ошибка в основном цикле: %s", e)
 
             await asyncio.sleep(PROACTIVE_INTERVAL)
 
@@ -193,8 +195,8 @@ def start_proactive_messaging(client):
     proactive_messaging = ProactiveMessaging(client)
     proactive_messaging.start()
 
-def stop_proactive_messaging():
+async def stop_proactive_messaging():
     """Остановить систему проактивных сообщений"""
     global proactive_messaging
     if proactive_messaging:
-        proactive_messaging.stop()
+        await proactive_messaging.stop()

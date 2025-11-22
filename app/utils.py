@@ -1,3 +1,9 @@
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+
 def is_self_message(message) -> bool: # Мой коммент: Вот я не понимаю что значмт "функция() -> тип". Вернуть значение такого-то типа чтобы гарантия была на то, что вернется такой тип?
     # Pyrogram message.outgoing = True если исходящее от твоего аккаунта
     return bool(getattr(message, "outgoing", False))
