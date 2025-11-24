@@ -3,6 +3,8 @@ from sqlalchemy import Integer, String, Boolean, Text, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
+from app.time_utils import utc_now
+
 class Base(DeclarativeBase):
     pass
 
@@ -16,7 +18,7 @@ class User(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     proactive_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    last_activity: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_activity: Mapped[datetime] = mapped_column(DateTime, default=utc_now)
 
     dialogs: Mapped[list["Dialog"]] = relationship("Dialog", back_populates="user", cascade="all, delete-orphan")
 
