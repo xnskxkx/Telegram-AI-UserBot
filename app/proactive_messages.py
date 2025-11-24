@@ -35,6 +35,16 @@ class ProactiveMessaging:
         self.daily_counters = {}  # {user_id: count_today}
         self.last_reset_day = datetime.now().day
 
+    @staticmethod
+    async def _cancel_task(task: asyncio.Task | None):
+        """Отменяет задачу и гарантированно дожидается её завершения."""
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
     def start(self):
         """Запустить фоновую задачу"""
         if not self.running:
@@ -46,12 +56,9 @@ class ProactiveMessaging:
         """Остановить фоновую задачу"""
         self.running = False
         if self.task:
-            self.task.cancel()
-            try:
-                await self.task
-            except asyncio.CancelledError:
-                pass
+            await self._cancel_task(self.task)
             logger.info("Система проактивных сообщений остановлена")
+        self.task = None
 
     def _reset_daily_counters_if_needed(self):
         """Сбросить счетчики если наступил новый день"""

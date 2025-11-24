@@ -8,3 +8,8 @@ AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False, class_=As
 async def get_session() -> AsyncSession:
     async with AsyncSessionLocal() as session:
         yield session
+
+
+async def dispose_engine():
+    """Корректно закрывает соединения движка."""
+    await engine.dispose()
