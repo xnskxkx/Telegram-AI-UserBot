@@ -1,5 +1,4 @@
 import asyncio
-import time
 import logging
 from datetime import datetime
 from typing import List
@@ -7,7 +6,8 @@ from sqlalchemy import select, and_
 from database.session import AsyncSessionLocal
 from database.models import User
 from app.openrouter import generate_reply
-from services.message_service import MessageService
+from app.time_utils import current_timestamp, seconds_since
+from services.message_history import MessageHistory
 
 # Настройки
 PROACTIVE_INTERVAL = 1800  # 30 * 60  # 30 минут между проверками
@@ -86,19 +86,6 @@ class ProactiveMessaging:
         """Увеличить счетчик отправленных сообщений"""
         self.daily_counters[user_id] = self.daily_counters.get(user_id, 0) + 1
 
-    async def _get_last_message_time(self, user: User) -> float:
-        """Получить время последнего сообщения пользователя"""
-        async with AsyncSessionLocal() as session:
-            res = await session.execute(
-                select(User).where(User.id == user.id)
-            )
-            refreshed_user = res.scalar_one_or_none()
-
-            if not refreshed_user or not refreshed_user.last_activity:
-                return 0
-
-            return refreshed_user.last_activity.timestamp()
-
     async def _get_users_for_proactive(self) -> List[User]:
         """Получить пользователей для проактивных сообщений"""
         async with AsyncSessionLocal() as session:
@@ -143,8 +130,8 @@ class ProactiveMessaging:
 
             # Сохраняем в историю
             async with AsyncSessionLocal() as session:
-                message_service = MessageService(session)
-                await message_service.append_assistant_message(user, icebreaker)
+                history = MessageHistory(session)
+                await history.append_assistant_message(user, icebreaker)
 
             self._increment_daily_counter(user.tg_id)
             logger.info("Отправлен ледокол пользователю %s: '%s...'", user.tg_id, icebreaker[:50])
@@ -170,8 +157,11 @@ class ProactiveMessaging:
                     if not self._can_send_proactive(user.tg_id):
                         continue
 
-                    last_msg_time = await self._get_last_message_time(user)
-                    time_since_last = time.time() - last_msg_time
+                    async with AsyncSessionLocal() as session:
+                        history = MessageHistory(session)
+                        last_msg_time = await history.last_message_timestamp(user)
+
+                    time_since_last = seconds_since(last_msg_time, current_timestamp())
 
                     if time_since_last >= SILENCE_THRESHOLD:
                         logger.info("Пользователь %s молчит %.1fч", user.tg_id, time_since_last / 3600)

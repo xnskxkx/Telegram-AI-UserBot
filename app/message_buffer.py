@@ -1,5 +1,4 @@
 import asyncio
-import time
 import os
 import tempfile
 from typing import Dict
@@ -13,6 +12,7 @@ from database.session import AsyncSessionLocal
 from services.user_service import UserService
 from services.message_service import MessageService
 from app.openrouter import generate_reply
+from app.time_utils import current_timestamp, seconds_since
 from config import REPLY_ON_UNKNOWN, STICKERS
 
 # Загружаем модель Whisper один раз при старте
@@ -252,7 +252,7 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
     if tg_id == (await client_instance.get_me()).id:
         return
 
-    current_time = time.time()
+    current_time = current_timestamp()
 
     # Инициализируем состояние пользователя
     if tg_id not in user_states:
@@ -261,7 +261,7 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
     state = user_states[tg_id]
 
     async with state.lock:
-        time_since_last = current_time - state.last_message_time
+        time_since_last = seconds_since(state.last_message_time, current_time)
         await _cancel_task_safely(state.processing_task)
 
         # Добавляем сообщение
@@ -299,7 +299,7 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
     if tg_id == (await client_instance.get_me()).id:
         return
 
-    current_time = time.time()
+    current_time = current_timestamp()
 
     # Инициализируем состояние пользователя
     if tg_id not in user_states:

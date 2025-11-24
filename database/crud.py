@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from .models import User, Dialog
 from config import CONTEXT_MAX_TURNS
-from datetime import datetime
+from app.time_utils import utc_now
 
 
 async def _cleanup_transaction(session: AsyncSession, success: bool):
@@ -159,7 +159,7 @@ async def append_history(session: AsyncSession, user: User, role: str, content: 
         hist.append({"role": role, "content": content})
 
         if role == "user":
-            user.last_activity = datetime.utcnow()
+            user.last_activity = utc_now()
 
         # Обрезаем до последних CONTEXT_MAX_TURNS*2 сообщений
         if len(hist) > CONTEXT_MAX_TURNS * 2:
