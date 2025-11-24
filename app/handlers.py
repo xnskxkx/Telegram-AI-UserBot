@@ -7,10 +7,8 @@ from app.client import client
 from app.utils import parse_control_command, validate_control_command
 from app.message_buffer import handle_message_smart, handle_media_message
 from database.session import AsyncSessionLocal
-from database.crud import (
-    upsert_user, get_user,
-    set_mode, set_active, set_proactive
-)
+from services.user_service import UserService
+from services.message_service import MessageService
 from config import REPLY_ON_UNKNOWN
 
 logger = logging.getLogger(__name__)
@@ -47,10 +45,12 @@ async def control_panel(client_instance, message: Message):
     logger.info("Выполняем команду: %s с аргументами: %s", cmd, args)
 
     async with AsyncSessionLocal() as session:
+        user_service = UserService(session)
+        message_service = MessageService(session)
         if cmd == "add":
             tg_id = int(args[0])
             username = args[1] if len(args) > 1 else None
-            user = await upsert_user(session, tg_id, username)
+            user = await user_service.add_or_update_user(tg_id, username)
             await message.reply(
                 f"Добавлен пользователь tg_id={user.tg_id}, mode={user.mode}, active={user.active}"
             )
@@ -58,30 +58,28 @@ async def control_panel(client_instance, message: Message):
         elif cmd == "mode":
             tg_id = int(args[0])
             mode = args[1]
-            ok = await set_mode(session, tg_id, mode)
+            ok = await user_service.update_mode(tg_id, mode)
             await message.reply("OK" if ok else "Пользователь не найден")
 
         elif cmd == "on":
             tg_id = int(args[0])
-            ok = await set_active(session, tg_id, True)
+            ok = await user_service.set_active(tg_id, True)
             await message.reply("OK" if ok else "Пользователь не найден")
 
         elif cmd == "off":
             tg_id = int(args[0])
-            ok = await set_active(session, tg_id, False)
+            ok = await user_service.set_active(tg_id, False)
             await message.reply("OK" if ok else "Пользователь не найден")
 
         elif cmd == "clear":
             tg_id = int(args[0])
-            from database.crud import clear_history
-
-            ok = await clear_history(session, tg_id)
+            ok = await message_service.clear_history(tg_id)
             await message.reply("История очищена" if ok else "Пользователь не найден")
 
         elif cmd == "proactive":
             tg_id = int(args[0])
             enabled = args[1].lower() == "on"
-            ok = await set_proactive(session, tg_id, enabled)
+            ok = await user_service.set_proactive(tg_id, enabled)
             if ok:
                 await message.reply(f"Проактивный режим {'включен' if enabled else 'выключен'} для {tg_id}")
             else:
@@ -112,12 +110,13 @@ async def handle_private_chat_smart(client_instance, message: Message):
 
     # Проверяем что пользователь активен
     async with AsyncSessionLocal() as session:
-        user = await get_user(session, tg_id)
+        user_service = UserService(session)
+        user = await user_service.get_user(tg_id)
         if not user:
             if not REPLY_ON_UNKNOWN:
                 return
             # Создаем пользователя при первой реплике
-            user = await upsert_user(session, tg_id, username)
+            user = await user_service.add_or_update_user(tg_id, username)
         elif not user.active:
             return
 
