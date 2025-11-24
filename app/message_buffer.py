@@ -4,6 +4,7 @@ import os
 import tempfile
 from typing import Dict
 from dataclasses import dataclass, field
+import logging
 import whisper
 
 from pyrogram import enums
@@ -18,6 +19,8 @@ from config import REPLY_ON_UNKNOWN, STICKERS
 # tiny - самая быстрая, но менее точная
 # base - хороший баланс скорости и качества (рекомендую)
 whisper_model = whisper.load_model("base")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -60,7 +63,7 @@ def is_likely_continuation(text: str, time_since_last: float) -> bool:
 async def transcribe_audio(file_path: str) -> str:
     """Транскрибирует аудио через локальный Whisper"""
     try:
-        print(f"[WHISPER] Начинаем транскрипцию файла: {file_path}")
+        logger.info("Начинаем транскрипцию файла: %s", file_path)
 
         # Whisper синхронный, запускаем в отдельном потоке
         loop = asyncio.get_event_loop()
@@ -70,17 +73,17 @@ async def transcribe_audio(file_path: str) -> str:
         )
 
         text = result["text"].strip()
-        print(f"[WHISPER] Транскрипция завершена: '{text[:100]}...'")
+        logger.info("Транскрипция завершена: '%s...'", text[:100])
         return text
     except Exception as e:
-        print(f"[WHISPER] Ошибка транскрипции: {e}")
+        logger.error("Ошибка транскрипции: %s", e)
         return "[Не удалось распознать аудио]"
     finally:
         # Удаляем временный файл
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-        except:
+        except Exception:
             pass
 
 
@@ -89,7 +92,7 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
     if not state.pending_media:
         return
 
-    print(f"[SMART] Ожидаем {len(state.pending_media)} транскрипций...")
+    logger.info("Ожидаем %s транскрипций...", len(state.pending_media))
 
     # Ждём все задачи с таймаутом
     tasks = [pm.transcription_task for pm in state.pending_media]
@@ -98,9 +101,9 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
             asyncio.gather(*tasks, return_exceptions=True),
             timeout=timeout
         )
-        print(f"[SMART] Все транскрипции завершены")
+        logger.info("Все транскрипции завершены")
     except asyncio.TimeoutError:
-        print(f"[SMART] Таймаут ожидания транскрипций ({timeout}с)")
+        logger.warning("Таймаут ожидания транскрипций (%ss)", timeout)
 
     # Заменяем placeholders на результаты
     for pm in state.pending_media:
@@ -110,9 +113,9 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
                 if pm.placeholder_index < len(state.messages):
                     old_placeholder = state.messages[pm.placeholder_index]
                     state.messages[pm.placeholder_index] = transcription
-                    print(f"[SMART] Заменили placeholder '{old_placeholder}' на транскрипцию")
+                    logger.info("Заменили placeholder '%s' на транскрипцию", old_placeholder)
             except Exception as e:
-                print(f"[SMART] Ошибка получения транскрипции: {e}")
+                logger.error("Ошибка получения транскрипции: %s", e)
 
     state.pending_media.clear()
 
@@ -135,7 +138,7 @@ async def process_user_messages(client_instance, tg_id: int, username: str = Non
         messages = state.messages.copy()
         state.messages.clear()
 
-        print(f"[SMART] Обрабатываем {len(messages)} сообщений от {tg_id}")
+        logger.info("Обрабатываем %s сообщений от %s", len(messages), tg_id)
 
         # Объединяем сообщения
         combined = "\n".join(messages)
@@ -148,27 +151,27 @@ async def process_user_messages(client_instance, tg_id: int, username: str = Non
 
 async def generate_and_send_reply(client_instance, tg_id: int, text: str, username: str = None):
     """Генерировать и отправить ответ"""
-    print(f"[SMART] Генерируем ответ для {tg_id} на текст: '{text[:50]}...'")
+    logger.info("Генерируем ответ для %s на текст: '%s...'", tg_id, text[:50])
 
     async with AsyncSessionLocal() as session:
         user = await get_user(session, tg_id)
         if not user:
-            print(f"[INCOMING] Пользователь {tg_id} не найден в БД")
+            logger.info("Пользователь %s не найден в БД", tg_id)
             if not REPLY_ON_UNKNOWN:
-                print(f"[INCOMING] REPLY_ON_UNKNOWN=False, пропускаем")
+                logger.info("REPLY_ON_UNKNOWN=False, пропускаем")
                 return
             user = await upsert_user(session, tg_id, username)
-            print(f"[INCOMING] Создан новый пользователь: {user.tg_id}")
+            logger.info("Создан новый пользователь: %s", user.tg_id)
 
         if not user.active:
-            print(f"[INCOMING] Пользователь {tg_id} неактивен, пропускаем")
+            logger.info("Пользователь %s неактивен, пропускаем", tg_id)
             return
 
-        print(f"[INCOMING] Пользователь активен, mode={user.mode}")
+        logger.info("Пользователь активен, mode=%s", user.mode)
 
         # История диалога
         history = await get_history(session, user)
-        print(f"[INCOMING] История: {len(history)} сообщений")
+        logger.info("История: %s сообщений", len(history))
 
         # Формируем историю для LLM, включая новое сообщение пользователя
         conversation_history = history + [{"role": "user", "content": text}]
@@ -182,7 +185,7 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
                 mode=user.mode,
                 history=conversation_history
             )
-            print(f"[SMART] Ответ от LLM: '{reply}'")
+            logger.info("Ответ от LLM: '%s'", reply)
 
             # Парсинг ответа
             parts = reply.split()
@@ -196,19 +199,19 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
             # Отправка текста
             if text_response:
                 await client_instance.send_message(tg_id, text_response)
-                print(f"[SMART] Отправлен текст для {tg_id}: '{text_response}'")
+                logger.info("Отправлен текст для %s: '%s'", tg_id, text_response)
             else:
-                print(f"[SMART] Текст ответа пустой, пропускаем отправку")
+                logger.info("Текст ответа пустой, пропускаем отправку")
 
             # Отправка стикера
             if sticker_number:
                 try:
                     await client_instance.send_sticker(tg_id, STICKERS[sticker_number])
-                    print(f"[SMART] Отправлен стикер {sticker_number} для {tg_id}")
+                    logger.info("Отправлен стикер %s для %s", sticker_number, tg_id)
                 except Exception as e:
-                    print(f"[SMART] Ошибка отправки стикера {sticker_number} для {tg_id}: {e}")
+                    logger.error("Ошибка отправки стикера %s для %s: %s", sticker_number, tg_id, e)
             else:
-                print(f"[SMART] Стикер не указан в ответе для {tg_id}")
+                logger.info("Стикер не указан в ответе для %s", tg_id)
 
             # Обновляем историю только после успешной отправки
             await append_history(session, user, "user", text)
@@ -217,7 +220,7 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
                 await append_history(session, user, "assistant", text_response)
 
         except Exception as e:
-            print(f"[ERROR] Generate reply: {e}")
+            logger.error("Generate reply: %s", e)
             await client_instance.send_message(tg_id, "Позже")
 
 
@@ -255,10 +258,10 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
     # Определяем стратегию
     if is_likely_continuation(message_text, time_since_last):
         timeout = BUFFER_TIMEOUT
-        print(f"[SMART] Похоже на продолжение, ждем {timeout}с")
+        logger.info("Похоже на продолжение, ждем %ss", timeout)
     else:
         timeout = 9
-        print(f"[SMART] Законченное сообщение, ждем {timeout}с")
+        logger.info("Законченное сообщение, ждем %ss", timeout)
 
     # Создаем задачу с таймаутом
     state.processing_task = asyncio.create_task(
@@ -301,7 +304,7 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
     state.messages.append(placeholder)
     state.last_message_time = current_time
 
-    print(f"[MEDIA] Добавлен placeholder на позицию {placeholder_index}")
+    logger.info("Добавлен placeholder на позицию %s", placeholder_index)
 
     # Запускаем транскрипцию асинхронно
     async def download_and_transcribe():
@@ -310,16 +313,16 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".ogg") as tmp_file:
                 tmp_path = tmp_file.name
 
-            print(f"[MEDIA] Скачиваем {media_type} в {tmp_path}")
+            logger.info("Скачиваем %s в %s", media_type, tmp_path)
             await message.download(file_name=tmp_path)
 
             # Транскрибируем
             transcription = await transcribe_audio(tmp_path)
-            print(f"[MEDIA] Получена транскрипция: '{transcription[:100]}...'")
+            logger.info("Получена транскрипция: '%s...'", transcription[:100])
 
             return transcription
         except Exception as e:
-            print(f"[MEDIA] Ошибка обработки {media_type}: {e}")
+            logger.error("Ошибка обработки %s: %s", media_type, e)
             return f"[Ошибка обработки {media_type}]"
 
     # Создаём задачу транскрипции
@@ -337,7 +340,7 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
 
     # Увеличиваем таймаут, т.к. есть pending медиа
     timeout = max(15, BUFFER_TIMEOUT)  # минимум 15 секунд для медиа
-    print(f"[MEDIA] Ждём {timeout}с перед обработкой (есть pending медиа)")
+    logger.info("Ждём %ss перед обработкой (есть pending медиа)", timeout)
 
     # Создаем задачу с таймаутом
     state.processing_task = asyncio.create_task(

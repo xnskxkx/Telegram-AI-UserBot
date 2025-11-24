@@ -1,3 +1,5 @@
+import logging
+
 from openai import AsyncOpenAI
 
 from config import OPENROUTER_API_KEY
@@ -5,6 +7,8 @@ from app.prompts import system_prompt_for
 
 if not OPENROUTER_API_KEY:
     raise RuntimeError("OPENROUTER_API_KEY is not set. Provide a valid key before starting the bot.")
+
+logger = logging.getLogger(__name__)
 
 client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -18,6 +22,8 @@ async def generate_reply(text: str, username: str | None, mode: str, history: li
     sys = {"role": "system", "content": system_prompt_for(username, mode)}
     msgs = [sys] + history + [{"role": "user", "content": text}]
 
+    logger.debug("Запрос к OpenRouter: mode=%s, username=%s", mode, username)
+
     resp = await client.chat.completions.create(
         model="deepseek/deepseek-chat-v3.1",   # можно поменять на нужную
         messages=msgs,
@@ -27,4 +33,5 @@ async def generate_reply(text: str, username: str | None, mode: str, history: li
             "X-Title": "tg_ai_user_bot"
         }
     )
+    logger.debug("Ответ от OpenRouter получен")
     return resp.choices[0].message.content

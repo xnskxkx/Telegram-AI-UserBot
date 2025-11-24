@@ -1,3 +1,5 @@
+import logging
+
 from pyrogram import filters
 from pyrogram.types import Message
 
@@ -11,25 +13,33 @@ from database.crud import (
 )
 from config import REPLY_ON_UNKNOWN
 
+logger = logging.getLogger(__name__)
+
+
 # --- Контрольные команды в 'Избранном': только исходящие сообщения к себе ---
 @client.on_message(filters.me & filters.private)
 async def control_panel(client_instance, message: Message):
-    print(f"[CONTROL] Получено сообщение: chat_id={message.chat.id}, from_user_id={message.from_user.id if message.from_user else None}, text='{message.text}'")
+    logger.info(
+        "Получено сообщение: chat_id=%s, from_user_id=%s, text='%s'",
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+        message.text,
+    )
 
     # Проверяем, что это именно Saved Messages (chat_id == from_user_id)
     if not message.from_user or message.chat.id != message.from_user.id:
-        print(f"[CONTROL] Не Saved Messages, пропускаем")
+        logger.info("Не Saved Messages, пропускаем")
         return
     if not message.text:
-        print(f"[CONTROL] Нет текста, пропускаем")
+        logger.info("Нет текста, пропускаем")
         return
 
     cmd, args = parse_control_command(message.text)
     if not cmd:
-        print(f"[CONTROL] Не команда, пропускаем")
+        logger.info("Не команда, пропускаем")
         return
 
-    print(f"[CONTROL] Выполняем команду: {cmd} с аргументами: {args}")
+    logger.info("Выполняем команду: %s с аргументами: %s", cmd, args)
 
     async with AsyncSessionLocal() as session:
         try:
@@ -100,7 +110,7 @@ async def control_panel(client_instance, message: Message):
                     ".on [tg_id] - включить ответы\n"
                     ".off [tg_id] - выключить ответы\n"
                     ".clear [tg_id] - очистить историю диалога\n"
-		            ".proactive [tg_id] - включить проактивный режим для пользователя\n"
+                            ".proactive [tg_id] - включить проактивный режим для пользователя\n"
                     ".help - эта справка"
                 )
 
@@ -108,6 +118,7 @@ async def control_panel(client_instance, message: Message):
             await message.reply("Ошибка: tg_id должен быть числом")
         except Exception as e:
             await message.reply(f"Error: {e}")
+
 
 # --- Входящие личные сообщения ---
 @client.on_message(filters.private & ~filters.service)
@@ -132,17 +143,17 @@ async def handle_private_chat_smart(client_instance, message: Message):
 
     # Обработка голосовых сообщений
     if message.voice:
-        print(f"[VOICE] Получено голосовое сообщение от {tg_id}")
+        logger.info("Получено голосовое сообщение от %s", tg_id)
         await handle_media_message(client_instance, tg_id, message, "voice", username)
         return
 
     # Обработка видеокружков
     if message.video_note:
-        print(f"[VIDEO_NOTE] Получен видеокружок от {tg_id}")
+        logger.info("Получен видеокружок от %s", tg_id)
         await handle_media_message(client_instance, tg_id, message, "video_note", username)
         return
 
     # Обработка текстовых сообщений
     if message.text:
-        print(f"[TEXT] Получено текстовое сообщение от {tg_id}")
+        logger.info("Получено текстовое сообщение от %s", tg_id)
         await handle_message_smart(client_instance, tg_id, message.text, username)
