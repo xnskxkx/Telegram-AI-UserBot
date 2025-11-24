@@ -4,6 +4,7 @@ from openai import AsyncOpenAI
 
 from config import OPENROUTER_API_KEY
 from app.prompts import system_prompt_for
+from services.llm_service import LLMService
 
 if not OPENROUTER_API_KEY:
     raise RuntimeError("OPENROUTER_API_KEY is not set. Provide a valid key before starting the bot.")
@@ -15,6 +16,9 @@ client = AsyncOpenAI(
     api_key=OPENROUTER_API_KEY,
 )
 
+llm_service = LLMService(client)
+
+
 async def generate_reply(text: str, username: str | None, mode: str, history: list[dict]):
     """
     history: [{'role':'user'|'assistant', 'content': '...'}]
@@ -24,7 +28,7 @@ async def generate_reply(text: str, username: str | None, mode: str, history: li
 
     logger.debug("Запрос к OpenRouter: mode=%s, username=%s", mode, username)
 
-    resp = await client.chat.completions.create(
+    resp = await llm_service.generate_chat_completion(
         model="deepseek/deepseek-chat-v3.1",   # можно поменять на нужную
         messages=msgs,
         max_tokens=1000,  # ограничим ответ
@@ -34,9 +38,9 @@ async def generate_reply(text: str, username: str | None, mode: str, history: li
         }
     )
     logger.debug("Ответ от OpenRouter получен")
-    return resp.choices[0].message.content
+    return resp
 
 
 async def close_openrouter_client():
     """Закрывает соединение OpenRouter client."""
-    await client.aclose()
+    await llm_service.close()
