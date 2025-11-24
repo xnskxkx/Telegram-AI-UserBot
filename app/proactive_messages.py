@@ -7,6 +7,7 @@ from sqlalchemy import select, and_
 from database.session import AsyncSessionLocal
 from database.models import User
 from app.openrouter import generate_reply
+from services.message_service import MessageService
 
 # Настройки
 PROACTIVE_INTERVAL = 1800  # 30 * 60  # 30 минут между проверками
@@ -142,8 +143,8 @@ class ProactiveMessaging:
 
             # Сохраняем в историю
             async with AsyncSessionLocal() as session:
-                from database.crud import append_history
-                await append_history(session, user, "assistant", icebreaker)
+                message_service = MessageService(session)
+                await message_service.append_assistant_message(user, icebreaker)
 
             self._increment_daily_counter(user.tg_id)
             logger.info("Отправлен ледокол пользователю %s: '%s...'", user.tg_id, icebreaker[:50])

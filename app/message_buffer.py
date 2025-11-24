@@ -10,7 +10,8 @@ import whisper
 from pyrogram import enums
 
 from database.session import AsyncSessionLocal
-from database.crud import get_user, upsert_user, get_history, append_history
+from services.user_service import UserService
+from services.message_service import MessageService
 from app.openrouter import generate_reply
 from config import REPLY_ON_UNKNOWN, STICKERS
 
@@ -173,13 +174,15 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
     logger.info("Генерируем ответ для %s на текст: '%s...'", tg_id, text[:50])
 
     async with AsyncSessionLocal() as session:
-        user = await get_user(session, tg_id)
+        user_service = UserService(session)
+        message_service = MessageService(session)
+        user = await user_service.get_user(tg_id)
         if not user:
             logger.info("Пользователь %s не найден в БД", tg_id)
             if not REPLY_ON_UNKNOWN:
                 logger.info("REPLY_ON_UNKNOWN=False, пропускаем")
                 return
-            user = await upsert_user(session, tg_id, username)
+            user = await user_service.add_or_update_user(tg_id, username)
             logger.info("Создан новый пользователь: %s", user.tg_id)
 
         if not user.active:
@@ -189,7 +192,7 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
         logger.info("Пользователь активен, mode=%s", user.mode)
 
         # История диалога
-        history = await get_history(session, user)
+        history = await message_service.get_history(user)
         logger.info("История: %s сообщений", len(history))
 
         # Формируем историю для LLM, включая новое сообщение пользователя
@@ -233,10 +236,10 @@ async def generate_and_send_reply(client_instance, tg_id: int, text: str, userna
                 logger.info("Стикер не указан в ответе для %s", tg_id)
 
             # Обновляем историю только после успешной отправки
-            await append_history(session, user, "user", text)
+            await message_service.append_user_message(user, text)
 
             if text_response:
-                await append_history(session, user, "assistant", text_response)
+                await message_service.append_assistant_message(user, text_response)
 
         except Exception as e:
             logger.error("Generate reply: %s", e)
