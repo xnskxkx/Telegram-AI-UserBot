@@ -1,22 +1,22 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Runtime code lives in `app/`: `client.py` boots the Pyrogram session, `handlers.py` routes inbound events, `message_buffer.py` debounces bursts, and `openrouter.py` plus `prompts.py` manage LLM prompts. SQLAlchemy models, CRUD helpers, and session setup live inside `database/`, writing to `tg_ai_user_bot.db`. Configuration defaults and environment lookups belong in `config.py`, while `run.py` is the single entry point for local runs and deployments. Place automation scripts under a future `scripts/` folder and mirror the package layout under `tests/` (e.g., `tests/app/test_message_buffer.py`).
+All runtime logic sits in `app/`: `client.py` wires Pyrogram, `handlers.py` manages chat flow, `message_buffer.py` debounces bursts, and `openrouter.py`/`prompts.py` encapsulate LLM calls. Shared helpers belong in `app/utils.py`. Persistence lives inside `database/` (`models.py`, `crud.py`, `session.py`) and writes to `tg_ai_user_bot.db`. Configuration defaults and environment lookups stay in `config.py`, while `run.py` is the single entry point. Keep docs or diagrams beside `README.md` and mirror the package layout when adding tests under `tests/` (e.g., `tests/app/test_message_buffer.py`).
 
 ## Build, Test, and Development Commands
-- `python -m venv venv && source venv/bin/activate`: create an isolated interpreter before installing dependencies.
-- `pip install -r requirements.txt`: install the Pyrogram fork, SQLAlchemy stack, OpenRouter client, and async helpers.
-- `python run.py`: launch the bot, perform Telegram login on first use, and create the SQLite database automatically.
-- `python -m pytest`: execute the automated suite; append `-k handlers` for selective runs.
+- `python -m venv venv && source venv/bin/activate`: create an isolated interpreter before touching dependencies.
+- `pip install -r requirements.txt`: install the Pyrogram fork, OpenRouter client, SQLAlchemy, and async helpers.
+- `python run.py`: start the bot locally, trigger Telegram login on first run, and auto-create the SQLite database.
+- `python -m pytest`: execute automated tests; append `-k handlers` or a path for focused runs.
 
 ## Coding Style & Naming Conventions
-Target Python 3.10+, four-space indentation, and explicit type hints on public helpers. Modules, functions, and files use `snake_case`, classes use `PascalCase`, and constants plus environment keys remain in `UPPER_SNAKE`. Keep OpenRouter-specific logic contained inside `openrouter.py` and generic utilities in `app/utils.py`. Prefer short docstrings describing intent rather than step-by-step instructions. When adjusting prompts, keep persona definitions in `prompts.py` and reference them by constant name (`MODE_FRIENDLY`) inside handlers.
+Target Python 3.10+, 4-space indentation, and explicit type hints for public helpers. Modules and functions use `snake_case`, classes use `PascalCase`, and constants/environment keys use `UPPER_SNAKE`. Keep provider-specific logic inside `openrouter.py` to maintain swapability, and move shared routines into `app/utils.py` rather than duplicating them. Docstrings should briefly describe intent, and persona tweaks belong in `prompts.py` referenced via constants such as `MODE_FRIENDLY`.
 
 ## Testing Guidelines
-Pytest is the expectation. Name files `test_<module>.py` and mirror the source tree. Mock Pyrogram clients, HTTP calls, and timers so suites remain offline-friendly. Cover buffer timing, proactive messaging toggles, and database CRUD branches before merging significant changes. Use `monkeypatch` to inject `.env` overrides when verifying `config.py` behavior. A manual smoke test (`python run.py`) is recommended whenever message handling changes.
+Pytest is the standard harness. Name files `test_<module>.py`, mirror the source tree, and mock Pyrogram clients or HTTP calls to remain offline-friendly. Cover message buffering, proactive toggles, and CRUD paths before merging. Use `monkeypatch` to inject `.env` overrides when verifying `config.py`, and run a smoke test via `python run.py` whenever handlers or client wiring change.
 
 ## Commit & Pull Request Guidelines
-Recent history favors short imperative subjects ("Fix key validation"), so match that voice and include a concise body explaining motivation and impact when needed. PRs should summarize the change, link related issues, describe manual/automated checks run, and call out schema or `.env` updates explicitly. Screenshots or logs are only necessary when altering user-visible Telegram behavior.
+Git history favors short imperative subjects ("Fix key validation"), so follow that voice. PRs should summarize the change, list manual/automated checks (`python run.py`, `python -m pytest`), call out schema or `.env` updates, and link related issues. Provide screenshots or logs only when Telegram-facing output changes.
 
 ## Security & Configuration Tips
-Never commit `.env`, `tg_ai_user_bot.db`, or `tg_ai_userbot.session*` artifacts. Document any new secret keys in README instructions and access them via `os.getenv` in `config.py`. When sharing example payloads, redact user identifiers and tokens, using placeholders like `123456789`.
+Never commit `.env`, `tg_ai_user_bot.db`, or `tg_ai_userbot.session*`. Document new secrets in README instructions and read them via `os.getenv`. Use placeholders such as `123456789` in docs and redact identifiers from logs shared in issues.
