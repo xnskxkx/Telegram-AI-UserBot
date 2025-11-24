@@ -35,3 +35,8 @@ async def generate_reply(text: str, username: str | None, mode: str, history: li
     )
     logger.debug("Ответ от OpenRouter получен")
     return resp.choices[0].message.content
+
+
+async def close_openrouter_client():
+    """Закрывает соединение OpenRouter client."""
+    await client.aclose()

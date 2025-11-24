@@ -37,6 +37,7 @@ class UserState:
     processing_task: asyncio.Task = None
     is_processing: bool = False
     pending_media: list = field(default_factory=list)  # список PendingMedia
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 # Состояния пользователей
@@ -89,13 +90,16 @@ async def transcribe_audio(file_path: str) -> str:
 
 async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_TIMEOUT):
     """Ждёт завершения всех pending транскрипций"""
-    if not state.pending_media:
+    async with state.lock:
+        pending_media = list(state.pending_media)
+
+    if not pending_media:
         return
 
     logger.info("Ожидаем %s транскрипций...", len(state.pending_media))
 
     # Ждём все задачи с таймаутом
-    tasks = [pm.transcription_task for pm in state.pending_media]
+    tasks = [pm.transcription_task for pm in pending_media]
     try:
         await asyncio.wait_for(
             asyncio.gather(*tasks, return_exceptions=True),
@@ -106,18 +110,31 @@ async def wait_for_pending_media(state: UserState, timeout: float = MEDIA_WAIT_T
         logger.warning("Таймаут ожидания транскрипций (%ss)", timeout)
 
     # Заменяем placeholders на результаты
-    for pm in state.pending_media:
+    for pm in pending_media:
         if pm.transcription_task.done():
             try:
                 transcription = await pm.transcription_task
-                if pm.placeholder_index < len(state.messages):
-                    old_placeholder = state.messages[pm.placeholder_index]
-                    state.messages[pm.placeholder_index] = transcription
-                    logger.info("Заменили placeholder '%s' на транскрипцию", old_placeholder)
+                async with state.lock:
+                    if pm.placeholder_index < len(state.messages):
+                        old_placeholder = state.messages[pm.placeholder_index]
+                        state.messages[pm.placeholder_index] = transcription
+                        logger.info("Заменили placeholder '%s' на транскрипцию", old_placeholder)
             except Exception as e:
                 logger.error("Ошибка получения транскрипции: %s", e)
 
-    state.pending_media.clear()
+    async with state.lock:
+        # Удаляем только обработанные pending медиа
+        state.pending_media = [pm for pm in state.pending_media if not pm.transcription_task.done()]
+
+
+async def _cancel_task_safely(task: asyncio.Task | None):
+    """Отменяет задачу и подавляет CancelledError"""
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 async def process_user_messages(client_instance, tg_id: int, username: str = None):
@@ -126,17 +143,18 @@ async def process_user_messages(client_instance, tg_id: int, username: str = Non
         return
 
     state = user_states[tg_id]
-    if not state.messages or state.is_processing:
-        return
-
-    state.is_processing = True
+    async with state.lock:
+        if not state.messages or state.is_processing:
+            return
+        state.is_processing = True
 
     try:
         # КРИТИЧНО: Ждём завершения всех транскрипций
         await wait_for_pending_media(state)
 
-        messages = state.messages.copy()
-        state.messages.clear()
+        async with state.lock:
+            messages = state.messages.copy()
+            state.messages.clear()
 
         logger.info("Обрабатываем %s сообщений от %s", len(messages), tg_id)
 
@@ -145,8 +163,9 @@ async def process_user_messages(client_instance, tg_id: int, username: str = Non
 
         await generate_and_send_reply(client_instance, tg_id, combined, username)
     finally:
-        state.is_processing = False
-        state.processing_task = None
+        async with state.lock:
+            state.is_processing = False
+            state.processing_task = None
 
 
 async def generate_and_send_reply(client_instance, tg_id: int, text: str, username: str = None):
@@ -237,39 +256,35 @@ async def handle_message_smart(client_instance, tg_id: int, message_text: str, u
         user_states[tg_id] = UserState()
 
     state = user_states[tg_id]
-    time_since_last = current_time - state.last_message_time
 
-    # Отменяем предыдущую задачу
-    if state.processing_task and not state.processing_task.done():
-        state.processing_task.cancel()
-        try:
-            await state.processing_task
-        except asyncio.CancelledError:
-            pass
+    async with state.lock:
+        time_since_last = current_time - state.last_message_time
+        await _cancel_task_safely(state.processing_task)
 
-    # Добавляем сообщение
-    state.messages.append(message_text)
-    state.last_message_time = current_time
+        # Добавляем сообщение
+        state.messages.append(message_text)
+        state.last_message_time = current_time
 
-    # Ограничиваем буфер
-    if len(state.messages) > MAX_BUFFER_SIZE:
-        state.messages = state.messages[-MAX_BUFFER_SIZE:]
+        # Ограничиваем буфер
+        if len(state.messages) > MAX_BUFFER_SIZE:
+            state.messages = state.messages[-MAX_BUFFER_SIZE:]
 
-    # Определяем стратегию
-    if is_likely_continuation(message_text, time_since_last):
-        timeout = BUFFER_TIMEOUT
-        logger.info("Похоже на продолжение, ждем %ss", timeout)
-    else:
-        timeout = 9
-        logger.info("Законченное сообщение, ждем %ss", timeout)
+        # Определяем стратегию
+        if is_likely_continuation(message_text, time_since_last):
+            timeout = BUFFER_TIMEOUT
+            logger.info("Похоже на продолжение, ждем %ss", timeout)
+        else:
+            timeout = 9
+            logger.info("Законченное сообщение, ждем %ss", timeout)
 
-    # Создаем задачу с таймаутом
-    state.processing_task = asyncio.create_task(
-        asyncio.sleep(timeout)
-    )
+        # Создаем задачу с таймаутом
+        state.processing_task = asyncio.create_task(
+            asyncio.sleep(timeout)
+        )
+        processing_task = state.processing_task
 
     try:
-        await state.processing_task
+        await processing_task
         await process_user_messages(client_instance, tg_id, username)
     except asyncio.CancelledError:
         pass
@@ -288,21 +303,15 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
         user_states[tg_id] = UserState()
 
     state = user_states[tg_id]
-    time_since_last = current_time - state.last_message_time
 
-    # Отменяем предыдущую задачу обработки
-    if state.processing_task and not state.processing_task.done():
-        state.processing_task.cancel()
-        try:
-            await state.processing_task
-        except asyncio.CancelledError:
-            pass
+    async with state.lock:
+        await _cancel_task_safely(state.processing_task)
 
-    # Добавляем placeholder сразу
-    placeholder = f"[Обрабатывается {media_type}...]"
-    placeholder_index = len(state.messages)
-    state.messages.append(placeholder)
-    state.last_message_time = current_time
+        # Добавляем placeholder сразу
+        placeholder = f"[Обрабатывается {media_type}...]"
+        placeholder_index = len(state.messages)
+        state.messages.append(placeholder)
+        state.last_message_time = current_time
 
     logger.info("Добавлен placeholder на позицию %s", placeholder_index)
 
@@ -329,26 +338,30 @@ async def handle_media_message(client_instance, tg_id: int, message, media_type:
     transcription_task = asyncio.create_task(download_and_transcribe())
 
     # Добавляем в pending
-    state.pending_media.append(PendingMedia(
-        placeholder_index=placeholder_index,
-        transcription_task=transcription_task
-    ))
+    async with state.lock:
+        state.pending_media.append(PendingMedia(
+            placeholder_index=placeholder_index,
+            transcription_task=transcription_task
+        ))
 
     # Ограничиваем буфер
-    if len(state.messages) > MAX_BUFFER_SIZE:
-        state.messages = state.messages[-MAX_BUFFER_SIZE:]
+    async with state.lock:
+        if len(state.messages) > MAX_BUFFER_SIZE:
+            state.messages = state.messages[-MAX_BUFFER_SIZE:]
 
     # Увеличиваем таймаут, т.к. есть pending медиа
     timeout = max(15, BUFFER_TIMEOUT)  # минимум 15 секунд для медиа
     logger.info("Ждём %ss перед обработкой (есть pending медиа)", timeout)
 
     # Создаем задачу с таймаутом
-    state.processing_task = asyncio.create_task(
-        asyncio.sleep(timeout)
-    )
+    async with state.lock:
+        state.processing_task = asyncio.create_task(
+            asyncio.sleep(timeout)
+        )
+        processing_task = state.processing_task
 
     try:
-        await state.processing_task
+        await processing_task
         await process_user_messages(client_instance, tg_id, username)
     except asyncio.CancelledError:
         pass
@@ -359,14 +372,17 @@ async def cancel_all_user_tasks():
     cancellation_targets = []
 
     for state in user_states.values():
-        if state.processing_task and not state.processing_task.done():
-            state.processing_task.cancel()
-            cancellation_targets.append(state.processing_task)
+        if state.processing_task:
+            cancellation_targets.append(_cancel_task_safely(state.processing_task))
 
         for pending in state.pending_media:
-            if pending.transcription_task and not pending.transcription_task.done():
-                pending.transcription_task.cancel()
-                cancellation_targets.append(pending.transcription_task)
+            if pending.transcription_task:
+                cancellation_targets.append(_cancel_task_safely(pending.transcription_task))
 
     if cancellation_targets:
         await asyncio.gather(*cancellation_targets, return_exceptions=True)
+
+    for state in user_states.values():
+        async with state.lock:
+            state.processing_task = None
+            state.pending_media.clear()
