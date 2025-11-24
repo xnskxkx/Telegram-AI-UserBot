@@ -4,7 +4,7 @@ from pyrogram import filters
 from pyrogram.types import Message
 
 from app.client import client
-from app.utils import parse_control_command
+from app.utils import parse_control_command, validate_control_command
 from app.message_buffer import handle_message_smart, handle_media_message
 from database.session import AsyncSessionLocal
 from database.crud import (
@@ -39,85 +39,65 @@ async def control_panel(client_instance, message: Message):
         logger.info("Не команда, пропускаем")
         return
 
+    is_valid, error_message = validate_control_command(cmd, args)
+    if not is_valid:
+        await message.reply(error_message)
+        return
+
     logger.info("Выполняем команду: %s с аргументами: %s", cmd, args)
 
     async with AsyncSessionLocal() as session:
-        try:
-            if cmd == "add":
-                if not args:
-                    await message.reply("Использование: .add <tg_id> [username]")
-                    return
-                tg_id = int(args[0])
-                username = args[1] if len(args) > 1 else None
-                user = await upsert_user(session, tg_id, username)
-                await message.reply(f"Добавлен пользователь tg_id={user.tg_id}, mode={user.mode}, active={user.active}")
+        if cmd == "add":
+            tg_id = int(args[0])
+            username = args[1] if len(args) > 1 else None
+            user = await upsert_user(session, tg_id, username)
+            await message.reply(
+                f"Добавлен пользователь tg_id={user.tg_id}, mode={user.mode}, active={user.active}"
+            )
 
-            elif cmd == "mode":
-                if len(args) < 2:
-                    await message.reply("Использование: .mode <tg_id> <normal|friendly|funny|rude>")
-                    return
-                tg_id = int(args[0])
-                mode = args[1]
-                if mode not in ["normal", "friendly", "funny", "rude"]:
-                    await message.reply("Режим должен быть: normal, friendly, funny или rude")
-                    return
-                ok = await set_mode(session, tg_id, mode)
-                await message.reply("OK" if ok else "Пользователь не найден")
+        elif cmd == "mode":
+            tg_id = int(args[0])
+            mode = args[1]
+            ok = await set_mode(session, tg_id, mode)
+            await message.reply("OK" if ok else "Пользователь не найден")
 
-            elif cmd == "on":
-                if len(args) < 1:
-                    await message.reply("Использование: .on <tg_id>")
-                    return
-                tg_id = int(args[0])
-                ok = await set_active(session, tg_id, True)
-                await message.reply("OK" if ok else "Пользователь не найден")
+        elif cmd == "on":
+            tg_id = int(args[0])
+            ok = await set_active(session, tg_id, True)
+            await message.reply("OK" if ok else "Пользователь не найден")
 
-            elif cmd == "off":
-                if len(args) < 1:
-                    await message.reply("Использование: .off <tg_id>")
-                    return
-                tg_id = int(args[0])
-                ok = await set_active(session, tg_id, False)
-                await message.reply("OK" if ok else "Пользователь не найден")
+        elif cmd == "off":
+            tg_id = int(args[0])
+            ok = await set_active(session, tg_id, False)
+            await message.reply("OK" if ok else "Пользователь не найден")
 
-            elif cmd == "clear":
-                if len(args) < 1:
-                    await message.reply("Использование: .clear <tg_id>")
-                    return
-                tg_id = int(args[0])
-                # Импортируем функцию
-                from database.crud import clear_history
-                ok = await clear_history(session, tg_id)
-                await message.reply("История очищена" if ok else "Пользователь не найден")
+        elif cmd == "clear":
+            tg_id = int(args[0])
+            from database.crud import clear_history
 
-            elif cmd == "proactive":
-                if len(args) < 2:
-                    await message.reply("Использование: .proactive <tg_id> <on|off>")
-                    return
-                tg_id = int(args[0])
-                enabled = args[1].lower() == "on"
-                ok = await set_proactive(session, tg_id, enabled)
-                if ok:
-                    await message.reply(f"Проактивный режим {'включен' if enabled else 'выключен'} для {tg_id}")
-                else:
-                    await message.reply("Пользователь не найден")
+            ok = await clear_history(session, tg_id)
+            await message.reply("История очищена" if ok else "Пользователь не найден")
 
-            elif cmd == "help":
-                await message.reply(
-                    "Команды:\n"
-                    ".add [tg_id] [username] - добавить пользователя\n"
-                    ".mode [tg_id] [normal|friendly|funny|rude] - установить режим\n"
-                    ".on [tg_id] - включить ответы\n"
-                    ".off [tg_id] - выключить ответы\n"
-                    ".clear [tg_id] - очистить историю диалога\n"
-                            ".proactive [tg_id] - включить проактивный режим для пользователя\n"
-                    ".help - эта справка"
-                )
+        elif cmd == "proactive":
+            tg_id = int(args[0])
+            enabled = args[1].lower() == "on"
+            ok = await set_proactive(session, tg_id, enabled)
+            if ok:
+                await message.reply(f"Проактивный режим {'включен' if enabled else 'выключен'} для {tg_id}")
+            else:
+                await message.reply("Пользователь не найден")
 
-        except ValueError:
-            await message.reply("Ошибка: tg_id должен быть числом")
-        except Exception as e:
-            await message.reply(f"Error: {e}")
+        elif cmd == "help":
+            await message.reply(
+                "Команды:\n"
+                ".add [tg_id] [username] - добавить пользователя\n"
+                ".mode [tg_id] [normal|friendly|funny|rude] - установить режим\n"
+                ".on [tg_id] - включить ответы\n"
+                ".off [tg_id] - выключить ответы\n"
+                ".clear [tg_id] - очистить историю диалога\n"
+                ".proactive [tg_id] [on|off] - включить или выключить проактивный режим\n"
+                ".help - эта справка"
+            )
 
 
 # --- Входящие личные сообщения ---
